@@ -1,0 +1,163 @@
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+
+BiocManager::install("Rgraphviz")
+library(caTools)#Partition dadaset into training and test set
+library("Rgraphviz") #Plot C4.5 decision tree 
+library(partykit) #Representing, summarizing, and visualizing tree-structured model
+library(RWeka) #Create Model J48(C4.5 decision tree) that is inbuilt in WEKA
+library(dplyr) #Manipulate data
+library(e1071) #Creat Navie bayes model
+
+#Read ecoli.data which is downloaded from "https://archive.ics.uci.edu/ml/machine-learning-databases/ecoli/ecoli.data"
+data1 <- read.table('ecoli.data', header = FALSE)
+
+#Renaming the columns
+names(data1) <- c("name","Sequence","mcg","gvh","lip","chg","aac","alm1","alm2")
+
+#Create empty dataframe to store values of accuracy of each models in seperate columns
+accuracy_table<- data.frame(matrix(ncol = 4, nrow = 0))
+colnames<-c("Training set split ratio", "SBC accuracy","c4.5 accuracy","naive bayes accuracy")
+colnames(accuracy_table) <- colnames
+
+#SELECTIVE BAYSIAN CLASSIFIER
+#Method: Split the data into training and test set. Taking 10% of traning data and passing this data as input to C4.5 model.
+#The attributes that appear in first 3 levels of the tree is choosen and this is repetated 5 times and union of the attributes are selected as the features 
+#which is the final set of features which is used as input for the navie bayes model. For each partion of data the model is run 15 times and the mean accuracy of each iteration is taken recorded
+#into accuracy_table.
+
+#Function to run SBC model multiple time with given ratio with which the dataset is to be partitioned into training and test set
+sbc_multiple_iteration <- function(split_ratio,n){
+  each_iteration_accuracy <- rep(NA,n) #Store the accuracy obtained from each iteration
+  for (b in 1:n){
+    
+    sample = sample.split(data1,SplitRatio = split_ratio) #Splits the data in the ratio mentioned in SplitRatio. After splitting these rows are marked as logical TRUE and the the remaining are marked as logical FALSE
+    train_f =subset(data1,sample ==TRUE) #Training dataset created named train_f using the rows that has value TRUE
+    test_f=subset(data1, sample ==FALSE) #Testing dataset created named test_f using the rows that has value FALSE
+   
+    
+    #Create five empty vector to store attributes that appear in first three levels of the tree obtained from five iterations 
+    g1<<-vector()
+    g2<<-vector()
+    g3<<-vector()
+    g4<<-vector()
+    g5<<-vector()
+    
+    #Create list of empty vectors for easy manipulation and access 
+    list_variables <- list(g1, g2, g3, g4, g5)
+
+    #For loop to iterate five time
+    for(a in 1:5){
+        cat("\nsbc iteration",a)
+        sample1<-train_f[sample(nrow(train_f), nrow(train_f)*10/100), ] #Random sample 10% of data from training set i.e train_f
+        sample1$alm2 <- factor(sample1$alm2) #Convert taret variable 'alm2' to factor 
+        c4.5_model <- J48(alm2 ~ .,data = sample1) #Create c4.5 model from RWEKA package
+        summary(c4.5_model)
+        #Create empty temp file to store the tree plot 
+        ff4 <- tempfile() 
+        write_to_dot(c4.5_model, ff4)
+        plot(agread(ff4))
+        split_list <- as.party(c4.5_model) #Convert c4.5_model into party object
+        partykit:::.list.rules.party(split_list) #Print out the list of splitting rules using partykit package
+        all_feature_names <- names(split_list$data) 
+        node_details <- as.list(split_list$node)
+        #Fucntion to extract attributes of first three levels of tree and store in list_variables
+        feature_select <- function(x) {
+              list_variables[[a]]<<- c(list_variables[[a]], all_feature_names[x$split$varid])
+              for(i in x$kids)
+              {
+                list_variables[[a]]<<- c(list_variables[[a]], all_feature_names[node_details[[i]]$split$varid])
+                for(j in node_details[[i]]$kids)
+                {
+                  list_variables[[a]] <<- c(list_variables[[a]], all_feature_names[node_details[[j]]$split$varid])
+                }
+              }
+            }
+            feature_select(node_details[[1]])
+            cat("\nAttributes of ",a," tree is",list_variables[[a]])
+          }
+
+          #Store each entry of list in seperate vector
+          vect1<-as.vector(list_variables[[1]])
+          vect2<-as.vector(list_variables[[2]])
+          vect3<-as.vector(list_variables[[3]])
+          vect4<-as.vector(list_variables[[4]])
+          vect5<-as.vector(list_variables[[5]])
+          #Union of vectors is done to obtaine final set of attributes and extract its corresponding values from data1 
+          features_union = Reduce(union, list(vect1,vect2,vect3,vect4,vect5))
+          final_features=append(features_union, 'alm2', after = length(features_union))
+          features <- names(data1)[(names(data1) %in% final_features)]
+          features_union
+          final_train<-train_f[,features]
+          final_test<-test_f[,features]
+          nbclassfier_model=naiveBayes(alm2~., data=final_train) #Build navie bayes model using final_train training set
+          predict_test <- predict(nbclassfier_model,final_test) #Test model accuracy by predicting 'alm2' lables for final_test test set 
+          table(pred=predict_test,true=final_test$alm2)
+          each_iteration_accuracy[b] <- mean(predict_test==final_test$alm2) #Take mean of accuracies of each iteration
+          }
+  return(each_iteration_accuracy)
+}
+
+#Run the model for randomly sampled 40% training and 60% test, 50% training and 50% test, 60% training and 40% test, 70% training and 30% test, 80% training and 20% test and 90% training and 10% test set of data
+for(i in 4:9)
+{
+  cat("\ntraining Partition: ",i)
+  each_iteration_accuracy <- sbc_multiple_iteration(i/10,15) #For each sets of training and test data iterate 15 times  
+  accuracy_table[i-3,] <- c(i*10,mean(each_iteration_accuracy)) #Store the accuracy of the model and training split ratio for each partition taking mean of all accuracies from 15 iterations.   
+}
+
+
+
+ #C4.5 decision tree alorithm
+
+#Function to run C4.5 model multiple time with given ratio with which the dataset is to be partitioned into training and test set
+c4.5_multiple_iteration <- function(split_ratio_c4.5,n){
+  each_iteration_accuracy_c4.5 <- rep(NA,n)
+  for (b in 1:n){
+    sample_c4.5 = sample.split(data1,SplitRatio = split_ratio_c4.5) #Splits the data in the ratio mentioned in SplitRatio. After splitting these rows are marked as logical TRUE and the the remaining are marked as logical FALSE
+    train_f_c4.5 =subset(data1,sample_c4.5 ==TRUE) #Training dataset created named train_f_c4.5 using the rows that has value TRUE
+    test_f_c4.5=subset(data1, sample_c4.5 ==FALSE) #Testing dataset created named test_f_c4.5 using the rows that has value TRUE
+    model_c4.5 <- J48(alm2 ~ .,data = train_f_c4.5) #Build C4.5 model using train_f_c4.5 training set
+    predict_c4.5_test <- predict(model_c4.5, newdata = test_f_c4.5) #Test model accuracy by predicting 'alm2' lables for test_f_c4.5 test set 
+    table(test_f_c4.5$alm2, predict_c4.5_test)
+    each_iteration_accuracy_c4.5 <- mean(predict_c4.5_test==test_f_c4.5$alm2) #Take mean of accuracies of each iteration
+  }
+  return(each_iteration_accuracy_c4.5)
+} 
+
+#Run the model for randomly sampled 40% training and 60% test, 50% training and 50% test, 60% training and 40% test, 70% training and 30% test, 80% training and 20% test and 90% training and 10% test set of data
+for(i in 4:9)
+{
+  each_iteration_accuracy_c4.5 <- c4.5_multiple_iteration(i/10,15) #For each sets of training and test data iterate 15 times  
+  accuracy_table[i-3,3] <- c(mean(each_iteration_accuracy_c4.5)) #Store the accuracy of the model for each partition taking mean of all accuracies from 15 iterations.   
+}
+
+
+#Naive bayes
+
+#Function to run navie bayes model multiple time with given ratio with which the dataset is to be partitioned into training and test set
+nb_multiple_iteration <- function(split_ratio_nb,n){
+  each_iteration_accuracy_nb <- rep(NA,n)
+  for (b in 1:n){
+    sample_nb = sample.split(data1,SplitRatio = split_ratio_nb) #Splits the data in the ratio mentioned in SplitRatio. After splitting these rows are marked as logical TRUE and the the remaining are marked as logical FALSE
+    train_f_nb =subset(data1,sample_nb ==TRUE) #Training dataset created named train_f_nb using the rows that has value TRUE
+    test_f_nb=subset(data1, sample_nb ==FALSE) #Testing dataset created named test_f_nb using the rows that has value TRUE
+    nb_model=naiveBayes(alm2~., data=train_f_nb) #Build navie bayes model using final_train training set
+    predict_nb_test <- predict(nb_model,test_f_nb) #Test model accuracy by predicting 'alm2' lables for test_f_nb test set 
+    table(pred=predict_nb_test,true=test_f_nb$alm2)
+    each_iteration_accuracy_nb <- mean(predict_nb_test==test_f_nb$alm2)  #Take mean of accuracies of each iteration
+  }
+  return(each_iteration_accuracy_nb)
+} 
+
+#Run the model for randomly sampled 40% training and 60% test, 50% training and 50% test, 60% training and 40% test, 70% training and 30% test, 80% training and 20% test and 90% training and 10% test set of data
+for(i in 4:9)
+{
+  each_iteration_accuracy_nb <- nb_multiple_iteration(i/10,15) #For each sets of training and test data iterate 15 times  
+  accuracy_table[i-3,4] <- c(mean(each_iteration_accuracy_nb)) #Store the accuracy of the model for each partition taking mean of all accuracies from 15 iterations.   
+}
+
+#Round the accuracy value to two decimals
+accuracy_table<-round(accuracy_table,digits = 2)
+accuracy_table
